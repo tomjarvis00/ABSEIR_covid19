@@ -220,3 +220,167 @@ comps <- compareModels(modelList = list(eu_result1, eu_result2), n_samples = 100
 rownames(comps) <- colnames(comps) <- c("CAR", "Distance")
 print(comps)
 ```
+
+```{r}
+covid <- read.csv("D:/Diss Track/owid-covid-data(1).csv")
+covid$date <- as.Date(covid$date)
+day1 = as.Date("2020-01-24")
+covid <- covid %>% mutate(day = as.numeric(date-day1))
+coviduk <- covid %>% filter(location=="United Kingdom")
+covidfr <- covid %>% filter(location== "France")
+covidit <- covid %>% filter(location== "Italy")
+covideu <- list(coviduk,covidfr,covidit)
+covideu <- Reduce(function(x, y) merge(x, y, all=TRUE), covideu)
+```
+
+
+```{r}
+second_wave_uk <- c(rep(0,7),coviduk$new_cases[1:293])
+
+covidfr <- covidfr %>% mutate(day = as.numeric(date-day1))
+second_wave_fr <- covidfr[1:300,]
+
+covidit <- covidit %>% mutate(day = as.numeric(date-day1))
+second_wave_it <- c(rep(0,7),covidit$new_cases[1:293])
+
+I_star_2 <- cbind(second_wave_uk,second_wave_fr$new_cases,second_wave_it)
+I_star_2[is.na(I_star_2)] <- 0
+```
+
+```{r}
+eu_secondwave <- covideu %>% filter(day<300)
+eu_secondwave %>% ggplot() + geom_point(mapping=aes(y=new_cases,x=day)) +
+  geom_point(mapping=aes(y=total_vaccinations/1000,x=day),colour="blue") + 
+               facet_wrap(~location) + ggtitle("First 300 days COVID-19 new cases in Europe")
+```
+
+```{r}
+data_model_2 <- DataModel(I_star_2,
+                        type="identity",
+                        compartment="I_star",
+                        cumulative=FALSE)
+
+reinfection_model <- ReinfectionModel("SEIR")
+
+
+informed_transition_priors <- ExponentialTransitionPriors(p_ei = 1-exp(-1/5.5), 
+                                     p_ir= 1-exp(-1/10),
+                                     p_ei_ess = 100,
+                                     p_ir_ess = 10)
+
+weibull_transition_priors <- WeibullTransitionPriors(39,30,36,6,30,20,66,6)
+
+sampling_control = SamplingControl(seed = 123123, 
+                                   n_cores = 8,
+                                   algorithm="Beaumont2009",
+                                   list(batch_size = 2000,
+                                           epochs = 1e6,
+                                           max_batches = 100,
+                                           shrinkage = 0.99,
+                                           multivariate_perturbation=FALSE,
+                                           keep_compartments = TRUE
+                                         )
+                                   )
+DM1 = matrix(c(0,1,1,
+               1,0,1,
+               1,1,0), nrow = 3, byrow = TRUE)
+
+distance_model_1 <- DistanceModel(list(DM1),priorAlpha=1,priorBeta=25)
+
+N <- c(coviduk$population[1],covidfr$population[1],covidit$population[1])
+E0 <- c(0,1,0)
+I0 <- c(0,1,0)
+
+eu_initial_value_container <- InitialValueContainer(S0=N-E0-I0,
+                                                    E0=E0,
+                                                    I0=I0,
+                                                    R0=c(0,0,0))
+```
+
+```{r}
+intercepts_2 = diag(2)[rep(1:2, each = 150,times=3),]
+
+days <- 1:320
+
+lockdown1 <-  coviduk$day >  60
+
+uk_partlinear_intervention_2 <- c(cumsum(lockdown1[1:130]),rep(70,50),rep(0,720))
+
+fr_partlinear_intervention_2 <- c(rep(0,300),cumsum(days>54)[1:84],rep(29,150-84),rep(0,450))
+
+it_partlinear_intervention_2 <- c(rep(0,600),(days>29)[1:200],rep(0,100))
+
+bump <- cumsum(covidfr$day[1:450] > 278 & covidfr$day[1:450] <305)[1:300]
+
+bump_it <- cumsum(covidfr$day[1:450] > 262 & covidfr$day[1:450] <305)[1:300]
+
+uk_lockdown2 <- c(bump,rep(0,600))
+
+fr_lockdown2 <- c(rep(0,300),bump,rep(0,300))
+
+it_lockdown2 <- c(rep(0,600),bump_it)
+
+eu_lockdown2 <- c(bump,bump,rep(0,300))
+
+eu_lockdown1 <- c(cumsum(lockdown1[1:130]),rep(70,50),rep(0,120),cumsum(days>54)[1:84],rep(29,150-84),rep(0,150),(days>29)[1:200],rep(0,100))
+
+middle_bit <- rep(c(rep(0,100),rep(1,100),rep(0,100)),times=3)
+
+eu_lockdowns_2 <- cbind(uk_partlinear_intervention_2,fr_partlinear_intervention_2,it_partlinear_intervention_2,eu_lockdown2)
+
+uk_vax <- c(coviduk$total_vaccinations[1:450]/100000,rep(0,900))
+fr_vax <- c(rep(0,450),covidfr$total_vaccinations[1:450]/100000,rep(0,450))
+it_vax <- c(rep(0,900),covidit$total_vaccinations[1:450]/100000)
+
+eu_vax <- cbind(uk_vax,fr_vax,it_vax)
+eu_vax[is.na(eu_vax)] <- 0
+
+eu_exposure_model_3 <- ExposureModel(cbind(intercepts_2,
+                                           eu_lockdowns_2),
+                                  nTpt=nrow(second_wave_fr),
+                                  nLoc=3,
+                                  betaPriorPrecision=0.5,
+                                  betaPriorMean=0)
+```
+
+```{r}
+eu_runtime3 = system.time(eu_result3 <- SpatialSEIRModel(data_model_2,
+                          eu_exposure_model_3,
+                          reinfection_model,
+                          distance_model_1,
+                          informed_transition_priors,
+                          eu_initial_value_container,
+                          sampling_control,
+                          samples = 100,
+                          verbose = 0))
+```
+
+```{r}
+summary(eu_result3)
+```
+
+```{r}
+sims = epidemic.simulations(eu_result3, replicates = 50)
+sim_I_star = lapply(sims$simulationResults, function(x){x$I_star})
+ism = array(Reduce(c, sim_I_star), dim = c(nrow(sim_I_star[[1]]),
+                                           ncol(sim_I_star[[2]]),
+                                           length(sim_I_star)))
+ismLB = apply(ism,1:2,quantile,probs = c(0.05))
+ismUB = apply(ism,1:2,quantile,probs = c(0.95))
+ismMean = apply(ism,1:2,quantile,probs = c(0.5))
+
+casePlot = function(idx, main){
+  plot(I_star_2[,idx], ylim = c(0, 40000), 
+       ylab = "Total Cases", xlab = "Time",
+       main = main)
+  lines(ismMean[,idx], col = "blue", lty = 2, lwd = 2)
+  lines(ismLB[,idx], col = "blue", lty = 3, lwd = 1)
+  lines(ismUB[,idx], col = "blue", lty = 3, lwd = 1)
+}
+
+
+```
+
+```{r}
+casePlot(3,"Italy")
+```
