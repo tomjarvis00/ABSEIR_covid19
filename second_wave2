@@ -1,0 +1,203 @@
+```{r}
+library(ABSEIR)
+library(tidyverse)
+```
+
+```{r}
+covid <- read.csv("D:/Diss Track/owid-covid-data(1).csv")
+coviduk <- covid %>% filter(location=="United Kingdom")
+coviduk$date <- as.Date(coviduk$date)
+day1 = as.Date("2020-01-31")
+coviduk <- coviduk %>% mutate(day = as.numeric(date-day1))
+two_waves <- coviduk[1:450,]
+```
+
+```{r}
+two_waves %>% ggplot() + geom_point(aes(day,new_cases),colour="red") + geom_point(aes(day,total_vaccinations/1000),colour="blue") + ggtitle("First two waves of COVID-19 and vaccination data")
+```
+
+```{r}
+data_modeltw <- DataModel(two_waves$new_cases,
+                        type="identity",
+                        compartment="I_star",
+                        cumulative=FALSE)
+
+lockdown1 <-  two_waves$day >  60
+
+bump <- cumsum(two_waves$day > 278 & two_waves$day <305)
+
+bump_term <- c(bump[1:305],rep(0,145))
+
+partlinear_interventiontw <- c(cumsum(lockdown1[1:90]),rep(30,60),rep(0,300))
+
+vaccinations <- two_waves$total_vaccinations
+vaccinations[is.na(vaccinations)] <- 0
+
+tests <- two_waves$new_tests_per_thousand
+tests[is.na(tests)] <- 0
+
+twexposure_model_1 <- ExposureModel(matrix(cbind(1,partlinear_interventiontw,bump_term),nrow=nrow(two_waves)),
+                                  nTpt=nrow(two_waves),
+                                  nLoc=1,
+                                  betaPriorPrecision=0.5,
+                                  betaPriorMean=0)
+
+twexposure_model_2 <- ExposureModel(matrix(cbind(c(rep(1,150),rep(0,300)),c(rep(0,150),rep(1,300)),c(partlinear_interventiontw2.1,rep(0,150)),bump_term,vaccinations/1000000),nrow=nrow(two_waves)),
+                                  nTpt=nrow(two_waves),
+                                  nLoc=1,
+                                  betaPriorPrecision=0.5,
+                                  betaPriorMean=0)
+
+twexposure_model_3 <- ExposureModel(matrix(cbind(1,partlinear_interventiontw,bump_term,vaccinations/1000000,tests),nrow=nrow(two_waves)),
+                                  nTpt=nrow(two_waves),
+                                  nLoc=1,
+                                  betaPriorPrecision=0.5,
+                                  betaPriorMean=0)
+
+twexposure_model_4 <- ExposureModel(matrix(cbind(1,vaccinations/10000),nrow=nrow(two_waves)),
+                                  nTpt=nrow(two_waves),
+                                  nLoc=1,
+                                  betaPriorPrecision=0.5,
+                                  betaPriorMean=0)
+
+just_cases <- ExposureModel(matrix(cbind(two_waves$new_cases),nrow=nrow(two_waves)),
+                                  nTpt=nrow(two_waves),
+                                  nLoc=1,
+                                  betaPriorPrecision=0.5,
+                                  betaPriorMean=0)
+
+reinfection_model <- ReinfectionModel("SEIR")
+
+distance_model <- DistanceModel(list(matrix(0)))
+
+initial_value_container <- InitialValueContainer(S0=first_wave$population[1], E0=1,I0=1,R0=0)
+
+transition_priors = ExponentialTransitionPriors(p_ei = 1-exp(-1/5), 
+                                     p_ir= 1-exp(-1/5),
+                                     p_ei_ess = 10,
+                                     p_ir_ess = 10)
+
+sampling_control = SamplingControl(seed = 123122, 
+                                   n_cores = 8,
+                                   algorithm="Beaumont2009",
+                                   list(batch_size = 2000,
+                                           epochs = 1e6,
+                                           max_batches = 100,
+                                           shrinkage = 0.99,
+                                           multivariate_perturbation=FALSE,
+                                           keep_compartments = TRUE
+                                         )
+                                   )
+```
+
+```{r}
+two_wave_result1 <- SpatialSEIRModel(data_modeltw,
+                          twexposure_model_1,
+                          reinfection_model,
+                          distance_model,
+                          transition_priors,
+                          initial_value_container,
+                          sampling_control,
+                          samples = 100,
+                          verbose = 0)
+```
+
+```{r}
+runtime_two_wave_2 = system.time(two_wave_result2 <- SpatialSEIRModel(data_modeltw,
+                          twexposure_model_2,
+                          reinfection_model,
+                          distance_model,
+                          transition_priors,
+                          initial_value_container,
+                          sampling_control,
+                          samples = 100,
+                          verbose = 0))
+```
+
+```{r}
+two_wave_result3 <- SpatialSEIRModel(data_modeltw,
+                          twexposure_model_3,
+                          reinfection_model,
+                          distance_model,
+                          transition_priors,
+                          initial_value_container,
+                          sampling_control,
+                          samples = 100,
+                          verbose = 0)
+```
+
+```{r}
+two_wave_jc <- SpatialSEIRModel(data_modeltw,
+                          just_cases,
+                          reinfection_model,
+                          distance_model,
+                          transition_priors,
+                          initial_value_container,
+                          sampling_control,
+                          samples = 100,
+                          verbose = 0)
+```
+
+```{r}
+two_wave_result4 <- SpatialSEIRModel(data_modeltw,
+                          twexposure_model_4,
+                          reinfection_model,
+                          distance_model,
+                          transition_priors,
+                          initial_value_container,
+                          sampling_control,
+                          samples = 100,
+                          verbose = 0)
+```
+
+
+```{r}
+summary(two_wave_result2)
+
+```
+
+```{r}
+plot(cbind(1,partlinear_intervention,bump_term,vaccinations/1000000) %*% c(-0.175,0.224,-0.155,-0.524))
+```
+
+
+
+```{r}
+tw_simulations1 <- epidemic.simulations(two_wave_result1,replicates=150, verbose = TRUE)
+```
+
+```{r}
+tw_simulations2 <- epidemic.simulations(two_wave_result2,replicates=150, verbose = TRUE)
+```
+
+```{r}
+tw_simulations3 <- epidemic.simulations(two_wave_result3,replicates=150, verbose = TRUE)
+```
+
+
+```{r}
+plotPosteriorPredictive = function(simulations, main)
+{
+  allSimulatedI_star = sapply(simulations$simulationResults, function(x){x$I_star})
+  
+  lowerQuantile = apply(allSimulatedI_star, 1, quantile, probs = c(0.025))
+  posteriorMean = apply(allSimulatedI_star, 1, mean)
+  upperQuantile = apply(allSimulatedI_star, 1, quantile, probs = c(0.975))
+  
+  
+  plot(two_waves$new_cases,
+       xlab = "Epidemic Day", ylab = "New Cases", main = main)
+  lines(upperQuantile, lty = 2, col = "blue")
+  lines(lowerQuantile, lty = 2, col = "blue")
+  lines(posteriorMean, lty = 1, col = "blue")
+  
+  legend(x = 100, y = 12, legend = c("Mean", "95% CI", "Observed"), lty = c(1,2,0), 
+         pch = c(NA,NA,1), col = c("blue", "blue", "black"), cex = 1)
+}
+```
+
+
+
+```{r}
+plotPosteriorPredictive(two_wave_result2,"Model 5.4")
+```
