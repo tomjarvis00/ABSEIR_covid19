@@ -1,0 +1,222 @@
+```{r}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ABSEIR)
+```
+
+
+
+```{r}
+covid <- read.csv("D:/Diss Track/owid-covid-data(1).csv")
+covid$date <- as.Date(covid$date)
+day1 = as.Date("2020-01-24")
+covid <- covid %>% mutate(day = as.numeric(date-day1))
+coviduk <- covid %>% filter(location=="United Kingdom")
+covidfr <- covid %>% filter(location== "France")
+covidit <- covid %>% filter(location== "Italy")
+covideu <- list(coviduk,covidfr,covidit)
+covideu <- Reduce(function(x, y) merge(x, y, all=TRUE), covideu)
+```
+
+
+```{r}
+first_wave_uk <- c(rep(0,7),coviduk$new_cases[1:143])
+
+covidfr <- covidfr %>% mutate(day = as.numeric(date-day1))
+first_wave_fr <- covidfr[1:150,]
+
+covidit <- covidit %>% mutate(day = as.numeric(date-day1))
+first_wave_it <- c(rep(0,7),covidit$new_cases[1:143])
+
+I_star <- cbind(first_wave_uk,first_wave_fr$new_cases,first_wave_it)
+I_star[is.na(I_star)] <- 0
+```
+
+```{r}
+eu_firstwave <- covideu %>% filter(day<151)
+eu_firstwave %>% ggplot() + geom_point(mapping=aes(y=new_cases,x=day)) + facet_wrap(~location) + ggtitle("First Wave COVID-19 new cases in Europe")
+```
+
+
+```{r}
+data_model <- DataModel(I_star,
+                        type="identity",
+                        compartment="I_star",
+                        cumulative=FALSE)
+
+reinfection_model <- ReinfectionModel("SEIR")
+
+
+informed_transition_priors <- ExponentialTransitionPriors(p_ei = 1-exp(-1/5.5), 
+                                     p_ir= 1-exp(-1/10),
+                                     p_ei_ess = 100,
+                                     p_ir_ess = 10)
+
+weibull_transition_priors <- WeibullTransitionPriors(39,30,36,6,30,20,66,6)
+
+sampling_control = SamplingControl(seed = 123123, 
+                                   n_cores = 8,
+                                   algorithm="Beaumont2009",
+                                   list(batch_size = 2000,
+                                           epochs = 1e6,
+                                           max_batches = 100,
+                                           shrinkage = 0.99,
+                                           multivariate_perturbation=FALSE,
+                                           keep_compartments = TRUE
+                                         )
+                                   )
+DM1 = matrix(c(0,1,1,
+               1,0,1,
+               1,1,0), nrow = 3, byrow = TRUE)
+
+distance_model_1 <- DistanceModel(list(DM1),priorAlpha=1,priorBeta=25)
+
+N <- c(coviduk$population[1],covidfr$population[1],covidit$population[1])
+E0 <- c(0,1,0)
+I0 <- c(0,1,0)
+
+eu_initial_value_container <- InitialValueContainer(S0=N-E0-I0,
+                                                    E0=E0,
+                                                    I0=I0,
+                                                    R0=c(0,0,0))
+```
+
+```{r}
+intercepts = diag(3)[rep(1:3, each = 150),]
+
+days <- 1:150
+
+uk_intervention_term <-  days >  67
+
+uk_partlinear_intervention <- c(cumsum(uk_intervention_term[1:97]),rep(29,length(first_wave_uk)-97),rep(0,300))
+
+fr_partlinear_intervention <- c(rep(0,150),cumsum(days>54)[1:84],rep(29,nrow(first_wave_fr)-84),rep(0,150))
+
+it_partlinear_intervention <- c(rep(0,300),days>29)
+
+eu_lockdowns <- c(uk_partlinear_intervention,fr_partlinear_intervention,it_partlinear_intervention)
+
+eu_exposure_model_1 <- ExposureModel(cbind(intercepts,
+                                           uk_partlinear_intervention,
+                                           fr_partlinear_intervention,
+                                           it_partlinear_intervention),
+                                  nTpt=nrow(first_wave_fr),
+                                  nLoc=3,
+                                  betaPriorPrecision=0.5,
+                                  betaPriorMean=0)
+```
+
+```{r}
+Nuk <- coviduk$population[1]
+Nfr <- covidfr$population[1]
+Nit <- covidit$population[1]
+
+Dukfr <- 1091260
+Dfrit <- 957610
+Dukit <- 1897960
+Gukfr <- sqrt(Nuk*Nfr/(Dukfr**2))
+Gukit <- sqrt(Nuk*Nit/(Dukit**2))
+Gfrit <- sqrt(Nfr*Nit/(Dfrit**2))
+gravity <- matrix(c(0,Gukfr,Gukit,Gukfr,0,Gfrit,Gukit,Gfrit,0),nrow=3,byrow=TRUE)/max(c(Gukfr,Gukit,Gfrit))
+
+distance_model_2 <- DistanceModel(list(DM1,gravity),priorAlpha=1,priorBeta=25)
+```
+
+
+```{r}
+eu_runtime1 = system.time(eu_result1 <- SpatialSEIRModel(data_model,
+                          eu_exposure_model_1,
+                          reinfection_model,
+                          distance_model_1,
+                          informed_transition_priors,
+                          eu_initial_value_container,
+                          sampling_control,
+                          samples = 100,
+                          verbose = 0))
+```
+
+```{r}
+eu_runtime2 <- system.time(eu_result2 <- SpatialSEIRModel(data_model,
+                          eu_exposure_model_1,
+                          reinfection_model,
+                          distance_model_2,
+                          informed_transition_priors,
+                          eu_initial_value_container,
+                          sampling_control,
+                          samples = 100,
+                          verbose = 0))
+```
+
+
+```{r}
+summary(eu_result2)
+```
+
+
+```{r}
+sims = epidemic.simulations(eu_result2, replicates = 50)
+sim_I_star = lapply(sims$simulationResults, function(x){x$I_star})
+ism = array(Reduce(c, sim_I_star), dim = c(nrow(sim_I_star[[1]]),
+                                           ncol(sim_I_star[[2]]),
+                                           length(sim_I_star)))
+ismLB = apply(ism,1:2,quantile,probs = c(0.05))
+ismUB = apply(ism,1:2,quantile,probs = c(0.95))
+ismMean = apply(ism,1:2,quantile,probs = c(0.5))
+
+casePlot = function(idx, main){
+  plot(I_star[,idx], ylim = c(0, 20000), 
+       ylab = "Total Cases", xlab = "Time",
+       main = main)
+  lines(ismMean[,idx], col = "blue", lty = 2, lwd = 2)
+  lines(ismLB[,idx], col = "blue", lty = 3, lwd = 1)
+  lines(ismUB[,idx], col = "blue", lty = 3, lwd = 1)
+}
+
+
+```
+
+```{r}
+makePlots <- function(modelObj, nm){
+  sims <- epidemic.simulations(modelObj, replicates = 50)
+  Is <- lapply(sims$simulationResults, function(x){x$I_star})
+  Is <- array(Reduce(c, Is), dim = c(nrow(Is[[1]]),
+                                           ncol(Is[[2]]),
+                                           length(Is)))
+  
+  Ism <- apply(Is, 1:2, quantile,probs = c(0.5))
+  Islb <- apply(Is, 1:2, quantile, probs = c(0.025))
+  Isub <- apply(Is, 1:2, quantile, probs = c(0.975))
+  
+  plotLocation <- function(x, model){
+    plot(I_star[,x], ylim = c(0, 10000),
+         main = paste(model, ": Observed and Posterior Predictive Simulation.\n location ", 
+                      neighbourhood[x], sep = ""))
+    lines(Ism[,x], col = rgb(0,0,0,0.8), lwd = 2)
+    lines(Islb[,x], col = rgb(0,0,0.5,0.8), lwd = 1, lty = 2)
+    lines(Isub[,x], col = rgb(0,0,0.5,0.8), lwd = 1, lty = 2)
+    #apply(Is, 3, function(i){
+    #  lines(i[,x], col = rgb(0,0,0,0.1))
+    #})
+    points(I_star[,x], pch = 16, col = "blue")
+  }
+  
+  for (i in 1:3){
+    plotLocation(i, nm)
+  }
+}
+```
+
+
+```{r}
+makePlots(eu_result1,"Uk")
+```
+
+```{r}
+casePlot(3,"Italy")
+```
+
+```{r}
+comps <- compareModels(modelList = list(eu_result1, eu_result2), n_samples = 100)
+rownames(comps) <- colnames(comps) <- c("CAR", "Distance")
+print(comps)
+```
