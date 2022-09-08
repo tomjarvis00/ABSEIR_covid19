@@ -1,0 +1,339 @@
+```{r}
+covid <- read.csv("D:/Diss Track/owid-covid-data(1).csv")
+coviduk <- covid %>% filter(location=="United Kingdom")
+```
+
+```{r}
+coviduk$date <- as.Date(coviduk$date)
+day1 = as.Date("2020-01-31")
+coviduk <- coviduk %>% mutate(day = as.numeric(date-day1))
+first_wave <- coviduk[1:150,]
+```
+
+
+
+
+```{r}
+first_wave %>% ggplot(aes(day,new_cases)) + geom_point() + ggtitle("First Wave new cases per day")
+```
+
+
+
+```{r}
+data_model <- DataModel(first_wave$new_cases,
+                        type="identity",
+                        compartment="I_star",
+                        cumulative=FALSE)
+
+data_model_red <- DataModel(first_wave$new_cases[1:50],
+                        type="identity",
+                        compartment="I_star",
+                        cumulative=FALSE)
+
+intervention_term <-  first_wave$day >  60
+
+exposure_model_1 <- ExposureModel(matrix(cbind(1,intervention_term),nrow=nrow(first_wave)),
+                                  nTpt=nrow(first_wave),
+                                  nLoc=1,
+                                  betaPriorPrecision=0.5,
+                                  betaPriorMean=0)
+
+random_term <- runif(length(first_wave$day),0,1)
+
+exposure_model_2 <- ExposureModel(matrix(cbind(1,intervention_term,random_term),nrow=nrow(first_wave)),
+                                  nTpt=nrow(first_wave),
+                                  nLoc=1,
+                                  betaPriorPrecision=0.5,
+                                  betaPriorMean=0)
+
+exposure_model_3 <- ExposureModel(matrix(cbind(1,cumsum(intervention_term)),nrow=nrow(first_wave)),
+                                  nTpt=nrow(first_wave),
+                                  nLoc=1,
+                                  betaPriorPrecision=0.5,
+                                  betaPriorMean=0)
+
+partlinear_intervention <- c(cumsum(intervention_term[1:90]),rep(29,nrow(first_wave)-90))
+
+exposure_model_4 <- ExposureModel(matrix(cbind(1,partlinear_intervention),nrow=nrow(first_wave)),
+                                  nTpt=nrow(first_wave),
+                                  nLoc=1,
+                                  betaPriorPrecision=0.5,
+                                  betaPriorMean=0)
+
+exposure_model_5 <- ExposureModel(matrix(1,nrow=50),
+                                  nTpt=50,
+                                  nLoc=1,
+                                  betaPriorPrecision=0.5,
+                                  betaPriorMean=0)
+
+reinfection_model <- ReinfectionModel("SEIR")
+
+distance_model <- DistanceModel(list(matrix(0)))
+
+initial_value_container <- InitialValueContainer(S0=first_wave$population[1], E0=1,I0=1,R0=0)
+
+transition_priors = ExponentialTransitionPriors(p_ei = 1-exp(-1/2), 
+                                     p_ir= 1-exp(-1/2),
+                                     p_ei_ess = 10,
+                                     p_ir_ess = 10)
+
+informed_transition_priors <- ExponentialTransitionPriors(p_ei = 1-exp(-1/5.5), 
+                                     p_ir= 1-exp(-1/10),
+                                     p_ei_ess = 100,
+                                     p_ir_ess = 10)
+
+weibull_transition_priors <- WeibullTransitionPriors(39,30,36,6,30,20,66,6)
+
+sampling_control = SamplingControl(seed = 123123, 
+                                   n_cores = 8,
+                                   algorithm="Beaumont2009",
+                                   list(batch_size = 2000,
+                                           epochs = 1e6,
+                                           max_batches = 100,
+                                           shrinkage = 0.99,
+                                           multivariate_perturbation=FALSE,
+                                           keep_compartments = TRUE
+                                         )
+                                   )
+```
+
+
+```{r}
+runtime1 = system.time(result1 <- SpatialSEIRModel(data_model,
+                          exposure_model_1,
+                          reinfection_model,
+                          distance_model,
+                          informed_transition_priors,
+                          initial_value_container,
+                          sampling_control,
+                          samples = 100,
+                          verbose = 0))
+
+
+```
+
+```{r}
+runtime3 = system.time(result3 <- SpatialSEIRModel(data_model,
+                          exposure_model_3,
+                          reinfection_model,
+                          distance_model,
+                          informed_transition_priors,
+                          initial_value_container,
+                          sampling_control,
+                          samples = 100,
+                          verbose = 0))
+```
+
+```{r}
+runtime4 = result4 <- system.time(SpatialSEIRModel(data_model,
+                          exposure_model_4,
+                          reinfection_model,
+                          distance_model,
+                          transition_priors,
+                          initial_value_container,
+                          sampling_control,
+                          samples = 100,
+                          verbose = 0))
+```
+
+```{r}
+runtime4b = system.time(result4b <- SpatialSEIRModel(data_model,
+                          exposure_model_4,
+                          reinfection_model,
+                          distance_model,
+                          informed_transition_priors,
+                          initial_value_container,
+                          sampling_control,
+                          samples = 100,
+                          verbose = 0))
+```
+
+```{r}
+runtime4w = system.time(result4w <- SpatialSEIRModel(data_model,
+                          exposure_model_4,
+                          reinfection_model,
+                          distance_model,
+                          weibull_transition_priors,
+                          initial_value_container,
+                          sampling_control,
+                          samples = 100,
+                          verbose = 0))
+```
+
+
+```{r}
+result5 <- SpatialSEIRModel(data_model_red,
+                          exposure_model_5,
+                          reinfection_model,
+                          distance_model,
+                          transition_priors,
+                          initial_value_container,
+                          sampling_control,
+                          samples = 100,
+                          verbose = 0)
+```
+
+```{r}
+exposure_model_6 <- ExposureModel(matrix(1,nrow=150),
+                                  nTpt=150,
+                                  nLoc=1,
+                                  betaPriorPrecision=0.5,
+                                  betaPriorMean=0)
+
+runtime6 = system.time(result6 <- SpatialSEIRModel(data_model,
+                          exposure_model_6,
+                          reinfection_model,
+                          distance_model,
+                          informed_transition_priors,
+                          initial_value_container,
+                          sampling_control,
+                          samples = 100,
+                          verbose = 0))
+```
+```{r}
+simulations6 <- epidemic.simulations(result6,replicates=50, verbose = FALSE)
+```
+
+
+```{r}
+summary(result4b)
+```
+
+```{r}
+summary(result3)
+```
+
+
+```{r}
+simulations1 <- epidemic.simulations(result1,replicates=150, verbose = TRUE)
+simulations6 <- epidemic.simulations(result6,replicates=150, verbose = TRUE)
+```
+
+```{r}
+simulations3 <- epidemic.simulations(result3,replicates=150, verbose = TRUE)
+```
+
+```{r}
+simulations4b <- epidemic.simulations(result4b,replicates=150, verbose = TRUE)
+```
+
+```{r}
+simulations5 <- epidemic.simulations(result5,replicates=150, verbose = TRUE)
+```
+
+
+```{r}
+plotPosteriorPredictive = function(simulations, main)
+{
+  allSimulatedI_star = sapply(simulations$simulationResults, function(x){x$I_star})
+  
+  lowerQuantile = apply(allSimulatedI_star, 1, quantile, probs = c(0.025))
+  posteriorMean = apply(allSimulatedI_star, 1, mean)
+  upperQuantile = apply(allSimulatedI_star, 1, quantile, probs = c(0.975))
+  
+  
+  plot(first_wave$new_cases,
+       xlab = "Epidemic Day", ylab = "New Cases", main = main)
+  lines(upperQuantile, lty = 2, col = "blue")
+  lines(lowerQuantile, lty = 2, col = "blue")
+  lines(posteriorMean, lty = 1, col = "blue")
+  
+  legend(x = 100, y = 12, legend = c("Mean", "95% CI", "Observed"), lty = c(1,2,0), 
+         pch = c(NA,NA,1), col = c("blue", "blue", "black"), cex = 1)
+}
+```
+
+
+
+```{r}
+plotPosteriorPredictive(nolockdown,"Model 4.4")
+```
+
+```{r}
+nolockdown <- Rsim(seed=123,params=list(beta_SE_1=c(-0.794,0),gamma_EI=0.207,gamma_IR=0.086),exposure_model=exposure_model_4,reinfection_model=reinfection_model,distance_model=distance_model,transition_priors=informed_transition_priors,initial_value_container=initial_value_container)
+
+Sims_with_CI(150,first_wave$new_cases,params=list(beta_SE_1=c(-0.794,0),gamma_EI=0.207,gamma_IR=0.086),exposure_model=exposure_model_4,reinfection_model=reinfection_model,distance_model=distance_model,transition_priors=informed_transition_priors,initial_value_container=initial_value_container)
+```
+
+```{r}
+intervention_term_early <-  first_wave$day >  50
+partlinear_intervention_early <- c(cumsum(intervention_term_early[1:80]),rep(29,nrow(first_wave)-80))
+exposure_model_earlyLD <- ExposureModel(matrix(cbind(1,partlinear_intervention_early),nrow=nrow(first_wave)),
+                                  nTpt=nrow(first_wave),
+                                  nLoc=1,
+                                  betaPriorPrecision=0.5,
+                                  betaPriorMean=0)
+earlyLD <- matrix(0,nrow=150,ncol=50)
+
+for (i in 1:50) {
+  earlyLD[] <- Rsim(seed=123,params=list(beta_SE_1=c(-0.794,-0.079),gamma_EI=0.207,gamma_IR=0.086),exposure_model=exposure_model_earlyLD,reinfection_model=reinfection_model,distance_model=distance_model,transition_priors=informed_transition_priors,initial_value_container=initial_value_container)
+}
+earlyLD <- Rsim(seed=123,params=list(beta_SE_1=c(-0.794,-0.079),gamma_EI=0.207,gamma_IR=0.086),exposure_model=exposure_model_earlyLD,reinfection_model=reinfection_model,distance_model=distance_model,transition_priors=informed_transition_priors,initial_value_container=initial_value_container)
+```
+
+```{r}
+Sims_with_CI <- function(days,case_data,params,exposure_model,reinfection_model,distance_model,transition_priors,initial_value_container) {
+  results <- matrix(0,nrow=days,ncol=50)
+  for (i in 1:50) {
+    sim <- Rsim(seed=i,params=params,exposure_model=exposure_model,reinfection_model=reinfection_model,distance_model=distance_model,transition_priors=transition_priors,initial_value_container=initial_value_container)
+    results[,i] <- sim$I_star
+  }
+  means <- rowMeans(results)
+  LB <- apply(results, 1, function(x) quantile(x, probs=.05))
+  UB <- apply(results, 1, function(x) quantile(x, probs=.95))
+  plot(case_data,ylim=c(0,max(max(means),max(case_data))))
+  lines(means,col="blue")
+  lines(LB,col="blue",lty=2)
+  lines(UB,col="blue",lty=2)
+}
+```
+
+
+```{r}
+Sims_with_CI(150,first_wave$new_cases,params=list(beta_SE_1=c(-0.794,-0.079),gamma_EI=0.207,gamma_IR=0.086),exposure_model=exposure_model_earlyLD,reinfection_model=reinfection_model,distance_model=distance_model,transition_priors=informed_transition_priors,initial_value_container=initial_value_container)
+```
+
+
+```{r}
+simulations1.R0 <- ComputeR0(simulations1, cores = 8)
+simulations2.R0 <- ComputeR0(simulations2, cores = 8)
+```
+
+```{r}
+simulations3.R0 <- ComputeR0(simulations3, cores = 8)
+simulations4.R0 <- ComputeR0(simulations4, cores = 8)
+simulations5.R0 <- ComputeR0(simulations5, cores = 8)
+simulations6.R0 <- ComputeR0(simulations6, cores = 8)
+```
+
+```{r}
+simulations4b.R0 <- ComputeR0(simulations4b, cores = 2)
+```
+
+
+```{r}
+plotR0 = function(simulations, main)
+{
+  allSimulatedEA_R0 = sapply(simulations$simulationResults, function(x){x$R_EA})
+  plot(apply(allSimulatedEA_R0, 1, mean), type = "l", ylim = c(0, 3), lwd =2,
+       ylab = "Reproductive Number", main = main)
+  lines(apply(allSimulatedEA_R0, 1, mean), lwd = 2, lty = 2, col = "blue")
+  lines(apply(allSimulatedEA_R0, 1, quantile, probs = c(0.1)), lwd = 2, lty = 2, col = "blue")
+  lines(apply(allSimulatedEA_R0, 1,  quantile, probs = c(0.9)), lwd = 2, lty = 2, col = "blue")
+}
+plotR0(simulations4.R0, "Model 1: EA-R(t)")
+```
+
+```{r}
+compareModels(list(result4b, result4w), n_samples = 1000, 
+              batch_size = 2000)
+```
+
+
+```{r}
+SEIR <- cbind(simulations6$simulationResults$Simulation_50$S,simulations6$simulationResults$Simulation_50$E,simulations6$simulationResults$Simulation_50$I,simulations6$simulationResults$Simulation_50$R,simulations6$simulationResults$Simulation_50$I_star,first_wave$new_cases)
+SEIR <- data.frame(day=seq(1,150),S=SEIR[,1],E=SEIR[,2],I=SEIR[,3],R=SEIR[,4],I_star=SEIR[,5],cases=SEIR[,6])
+head(SEIR)
+SEIR %>% ggplot() + geom_line(mapping=aes(x=day,y=I),colour="red") + geom_line(mapping=aes(x=day,y=R),colour="blue") + geom_line(mapping=aes(x=day,y=E)) +
+  geom_line(mapping=aes(x=day,y=S)) + ggtitle("SEIR graph Model 4.1")
+```
